@@ -12,6 +12,7 @@ docopt = "1.1.0"
 serde = { version = "1", features = ["derive"] }
 url = "2.1.1"
 curl = "0.4.25"
+flate2 = "1.0"
 
 [features]
 default = ["juice/native"]
