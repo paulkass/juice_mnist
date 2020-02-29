@@ -1,7 +1,10 @@
 #![feature(backtrace)]
 
+extern crate image;
+
 use std::fs::File;
-use std::io::{Read, Write, Take};
+use std::io::{Read, Write};
+use std::iter::Iterator;
 use std::path::Path;
 
 use curl::easy::Easy;
@@ -11,15 +14,25 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::error::Error;
-use std::borrow::{BorrowMut, Borrow};
+
+use juice::layer::{LayerConfig, LayerType};
+use juice::layers::{LinearConfig, NegativeLogLikelihoodConfig, SequentialConfig};
+
+use juice::util::native_backend;
+
+use juice::solver::{Solver, SolverConfig};
+use std::rc::Rc;
+
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use std::iter::FromIterator;
 
 mod error;
 
 const DATA_LINKS: [&str; 4] = [
-  "http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz",
-  "http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz",
-  "http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz",
-  "http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz",
+    "http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz",
+    "http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz",
+    "http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz",
+    "http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz",
 ];
 
 const USAGE: &'static str = "
@@ -42,105 +55,165 @@ Options:
 
 #[derive(Debug, Deserialize)]
 struct Args {
-  cmd_download: bool,
-  cmd_train: bool,
-  cmd_test: bool,
-  arg_directory: Option<String>,
-  arg_config: Option<String>,
+    cmd_download: bool,
+    cmd_train: bool,
+    cmd_test: bool,
+    arg_directory: Option<String>,
+    arg_config: Option<String>,
 }
 
 fn download_datasets(dir: Option<String>) -> Result<(), Error> {
-  let directory = dir.ok_or("Please specify a directory when downloading datasets")?;
+    let directory = dir.ok_or("Please specify a directory when downloading datasets")?;
 
-  let mut easy = Easy::new();
+    let mut easy = Easy::new();
 
-  for s in DATA_LINKS.iter() {
-    let s = *s;
-    let url = Url::parse(s)?;
-    let filename: &str = url
-      .path_segments()
-      .ok_or("Could not get path segments")?
-      .last()
-      .ok_or("Could not get last path segment")?;
+    for s in DATA_LINKS.iter() {
+        let s = *s;
+        let url = Url::parse(s)?;
+        let filename: &str = url
+            .path_segments()
+            .ok_or("Could not get path segments")?
+            .last()
+            .ok_or("Could not get last path segment")?;
 
-    let path = Path::new::<str>(directory.as_ref()).join(filename);
-    let path = path.as_path();
-    println!("Downloading {:?}", path.file_name().unwrap());
-    {
-      let mut file = File::create(path).expect("Failed to create a file to write to");
+        let path = Path::new::<str>(directory.as_ref()).join(filename);
+        let path = path.as_path();
+        println!("Downloading {:?}", path.file_name().unwrap());
+        {
+            let mut file = File::create(path).expect("Failed to create a file to write to");
 
-      easy.url(s)?;
-      easy.write_function(move |data| {
-        file.write_all(&data).unwrap();
-        Ok(data.len())
-      })?;
-      easy.perform().unwrap();
+            easy.url(s)?;
+            easy.write_function(move |data| {
+                file.write_all(&data).unwrap();
+                Ok(data.len())
+            })?;
+            easy.perform().unwrap();
+        }
+
+        {
+            let mut gzippedBytes: Vec<u8> = vec![];
+            let file = File::open(path)?;
+            let mut decoder = GzDecoder::new(file);
+            println!("Decoding file {:?}", path.file_name().unwrap());
+            decoder.read_to_end(&mut gzippedBytes);
+
+            // Write the decoded file
+            let path = Path::new::<str>(directory.as_ref()).join(filename.replace(".gz", ""));
+            let mut unzipped_file = File::create(path)?;
+            unzipped_file.write_all(gzippedBytes.as_slice())?;
+        }
     }
-
-    {
-      let mut gzippedBytes: Vec<u8> = vec![];
-      let file = File::open(path)?;
-      let mut decoder = GzDecoder::new(file);
-      println!("Decoding file {:?}", path.file_name().unwrap());
-      decoder.read_to_end(&mut gzippedBytes);
-
-      // Write the decoded file
-      let path = Path::new::<str>(directory.as_ref()).join(filename.replace(".gz", ""));
-      let mut unzipped_file = File::create(path)?;
-      unzipped_file.write_all(gzippedBytes.as_slice())?;
-    }
-  }
-  Ok(())
+    Ok(())
 }
 
-fn readu32(file: &File) -> u32 {
-  let mut values = [0u8; 4];
-  let mut taker = file.take(4);
-  taker.read(&mut values);
+fn readu32(file: &File) -> Result<u32, Error> {
+    let mut values = [0u8; 4];
+    let mut taker = file.take(4);
+    taker.read(&mut values)?;
 
-  let mut x = 0u32;
-  for (i, v) in values.iter().rev().enumerate() {
-    let i = i as u32;
-    x = x + ((*v as u32) << 8*i);
-  }
+    Ok(BigEndian::read_u32(&values))
+}
 
-  x
+fn getModelCfg(batch_size: usize, input_dimensions: (usize, usize)) -> LayerConfig {
+    let linear_1 = LayerConfig::new("linear1", LinearConfig { output_size: 500 });
+    let linear_2 = LayerConfig::new("linear2", LinearConfig { output_size: 10 });
+
+    let first_activation = LayerConfig::new("relu", LayerType::ReLU);
+    let last_activation = LayerConfig::new("sigmoid", LayerType::Sigmoid);
+
+    let mut total_config = SequentialConfig::default();
+    total_config.add_input(
+        "data",
+        &vec![batch_size, input_dimensions.0, input_dimensions.1],
+    );
+    total_config.add_layer(linear_1);
+    total_config.add_layer(first_activation);
+    total_config.add_layer(linear_2);
+    total_config.add_layer(last_activation);
+
+    LayerConfig::new("model", LayerType::Sequential(total_config))
+}
+
+fn getSolverCfg(batch_size: usize, output_size: usize) -> LayerConfig {
+    let nll_config = LayerConfig::new(
+        "neg. log likelihood",
+        NegativeLogLikelihoodConfig {
+            num_classes: output_size,
+        },
+    );
+
+    let mut config = SequentialConfig::default();
+    config.add_input("network_output", &[batch_size, output_size]);
+    config.add_input("label", &[batch_size, 1]);
+    config.add_layer(nll_config);
+
+    LayerConfig::new("solver", LayerType::Sequential(config))
 }
 
 fn train_dataset() -> Result<(), Error> {
-  let train_label_path = Path::new("data/train-labels-idx1-ubyte");
-  let train_image_path = Path::new("data/train-images-idx3-ubyte");
+    let train_label_path = Path::new("data/train-labels-idx1-ubyte");
+    let train_image_path = Path::new("data/train-images-idx3-ubyte");
 
-  let trainLabelFile = File::open(train_label_path)?;
-  let trainImageFile = File::open(train_image_path)?;
+    let mut trainLabelFile = File::open(train_label_path)?;
+    let mut trainImageFile = File::open(train_image_path)?;
 
-  // These magic numbers verify that you are reading bits the right way
-  assert_eq!(readu32(&trainLabelFile), 2049);
-  assert_eq!(readu32(&trainImageFile), 2051);
+    // These magic numbers verify that you are reading bits the right way
+    assert_eq!(readu32(&trainLabelFile)?, 2049);
+    assert_eq!(readu32(&trainImageFile)?, 2051);
 
-  let num_of_records = readu32(&trainLabelFile);
-  assert_eq!(num_of_records, readu32(&trainImageFile));
+    let num_of_records = readu32(&trainLabelFile)?;
+    assert_eq!(num_of_records, readu32(&trainImageFile)?);
 
-  let rows = readu32(&trainImageFile);
-  let cols = readu32(&trainImageFile);
+    let rows = readu32(&trainImageFile)? as usize;
+    let cols = readu32(&trainImageFile)? as usize;
 
-  println!("Image dimensions are: ({}, {})", rows, cols);
+    println!("Image dimensions are: ({}, {})", rows, cols);
 
-  Ok(())
+    // Put this in a command param
+    let batch_size = 10usize;
+    let output_size = 10usize;
+
+    let network_cfg = getModelCfg(batch_size, (rows, cols));
+    let object_cfg = getSolverCfg(batch_size, output_size);
+
+    let mut solver_cfg = SolverConfig::default();
+    solver_cfg.network = network_cfg;
+    solver_cfg.objective = object_cfg;
+
+    let native_backend = Rc::new(native_backend());
+    let _solver = Solver::from_config(native_backend.clone(), native_backend.clone(), &solver_cfg);
+
+    loop {
+        let _label = match &trainLabelFile.read_u8() {
+            Err(_) => break,
+            Ok(l) => *l,
+        };
+
+        let _image: Vec<u8> = Vec::from_iter((0..rows * cols).map(|_| -> u8 {
+            // Have to flip bits because otherwise it will be white text on a dark background
+            *(&trainImageFile.read_u8().unwrap()) ^ 255
+        }));
+
+        // In case you want to look at the actual image
+        // if i == 3 { break }
+        // image::save_buffer(format!("image{}_{}.png", i, label), image.as_slice(), rows as u32, cols as u32, image::ColorType::L8).unwrap();
+    }
+
+    Ok(())
 }
 
 fn main() -> Result<(), Error> {
-  let args: Args = Docopt::new(USAGE)
-    .and_then(|d| d.deserialize())
-    .unwrap_or_else(|e| e.exit());
+    let args: Args = Docopt::new(USAGE)
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
 
-  println!("{:?}", args);
+    println!("{:?}", args);
 
-  if args.cmd_download {
-    download_datasets(args.arg_directory)?;
-  } else if args.cmd_train {
-    train_dataset()?;
-  }
+    if args.cmd_download {
+        download_datasets(args.arg_directory)?;
+    } else if args.cmd_train {
+        train_dataset()?;
+    }
 
-  Ok(())
+    Ok(())
 }
