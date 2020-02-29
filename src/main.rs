@@ -1,7 +1,7 @@
 #![feature(backtrace)]
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Write, Take};
 use std::path::Path;
 
 use curl::easy::Easy;
@@ -11,14 +11,15 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::error::Error;
+use std::borrow::{BorrowMut, Borrow};
 
 mod error;
 
 const DATA_LINKS: [&str; 4] = [
-    "http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz",
-    "http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz",
-    "http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz",
-    "http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz",
+  "http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz",
+  "http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz",
+  "http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz",
+  "http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz",
 ];
 
 const USAGE: &'static str = "
@@ -41,67 +42,105 @@ Options:
 
 #[derive(Debug, Deserialize)]
 struct Args {
-    cmd_download: bool,
-    cmd_train: bool,
-    cmd_test: bool,
-    arg_directory: Option<String>,
-    arg_config: Option<String>,
+  cmd_download: bool,
+  cmd_train: bool,
+  cmd_test: bool,
+  arg_directory: Option<String>,
+  arg_config: Option<String>,
 }
 
 fn download_datasets(dir: Option<String>) -> Result<(), Error> {
-    let directory = dir.ok_or("Please specify a directory when downloading datasets")?;
+  let directory = dir.ok_or("Please specify a directory when downloading datasets")?;
 
-    let mut easy = Easy::new();
+  let mut easy = Easy::new();
 
-    for s in DATA_LINKS.iter() {
-        let s = *s;
-        let url = Url::parse(s)?;
-        let filename: &str = url
-            .path_segments()
-            .ok_or("Could not get path segments")?
-            .last()
-            .ok_or("Could not get last path segment")?;
+  for s in DATA_LINKS.iter() {
+    let s = *s;
+    let url = Url::parse(s)?;
+    let filename: &str = url
+      .path_segments()
+      .ok_or("Could not get path segments")?
+      .last()
+      .ok_or("Could not get last path segment")?;
 
-        let path = Path::new::<str>(directory.as_ref()).join(filename);
-        let path = path.as_path();
-        println!("Downloading {:?}", path.file_name().unwrap());
-        {
-            let mut file = File::create(path).expect("Failed to create a file to write to");
+    let path = Path::new::<str>(directory.as_ref()).join(filename);
+    let path = path.as_path();
+    println!("Downloading {:?}", path.file_name().unwrap());
+    {
+      let mut file = File::create(path).expect("Failed to create a file to write to");
 
-            easy.url(s)?;
-            easy.write_function(move |data| {
-                file.write_all(&data).unwrap();
-                Ok(data.len())
-            })?;
-            easy.perform().unwrap();
-        }
-
-        {
-            let mut gzippedBytes: Vec<u8> = vec![];
-            let file = File::open(path)?;
-            let mut decoder = GzDecoder::new(file);
-            println!("Decoding file {:?}", path.file_name().unwrap());
-            decoder.read_to_end(&mut gzippedBytes);
-
-            // Write the decoded file
-            let path = Path::new::<str>(directory.as_ref()).join(filename.replace(".gz", ""));
-            let mut unzipped_file = File::create(path)?;
-            unzipped_file.write_all(gzippedBytes.as_slice())?;
-        }
+      easy.url(s)?;
+      easy.write_function(move |data| {
+        file.write_all(&data).unwrap();
+        Ok(data.len())
+      })?;
+      easy.perform().unwrap();
     }
-    Ok(())
+
+    {
+      let mut gzippedBytes: Vec<u8> = vec![];
+      let file = File::open(path)?;
+      let mut decoder = GzDecoder::new(file);
+      println!("Decoding file {:?}", path.file_name().unwrap());
+      decoder.read_to_end(&mut gzippedBytes);
+
+      // Write the decoded file
+      let path = Path::new::<str>(directory.as_ref()).join(filename.replace(".gz", ""));
+      let mut unzipped_file = File::create(path)?;
+      unzipped_file.write_all(gzippedBytes.as_slice())?;
+    }
+  }
+  Ok(())
+}
+
+fn readu32(file: &File) -> u32 {
+  let mut values = [0u8; 4];
+  let mut taker = file.take(4);
+  taker.read(&mut values);
+
+  let mut x = 0u32;
+  for (i, v) in values.iter().rev().enumerate() {
+    let i = i as u32;
+    x = x + ((*v as u32) << 8*i);
+  }
+
+  x
+}
+
+fn train_dataset() -> Result<(), Error> {
+  let train_label_path = Path::new("data/train-labels-idx1-ubyte");
+  let train_image_path = Path::new("data/train-images-idx3-ubyte");
+
+  let trainLabelFile = File::open(train_label_path)?;
+  let trainImageFile = File::open(train_image_path)?;
+
+  // These magic numbers verify that you are reading bits the right way
+  assert_eq!(readu32(&trainLabelFile), 2049);
+  assert_eq!(readu32(&trainImageFile), 2051);
+
+  let num_of_records = readu32(&trainLabelFile);
+  assert_eq!(num_of_records, readu32(&trainImageFile));
+
+  let rows = readu32(&trainImageFile);
+  let cols = readu32(&trainImageFile);
+
+  println!("Image dimensions are: ({}, {})", rows, cols);
+
+  Ok(())
 }
 
 fn main() -> Result<(), Error> {
-    let args: Args = Docopt::new(USAGE)
-        .and_then(|d| d.deserialize())
-        .unwrap_or_else(|e| e.exit());
+  let args: Args = Docopt::new(USAGE)
+    .and_then(|d| d.deserialize())
+    .unwrap_or_else(|e| e.exit());
 
-    println!("{:?}", args);
+  println!("{:?}", args);
 
-    if args.cmd_download {
-        download_datasets(args.arg_directory)?;
-    }
+  if args.cmd_download {
+    download_datasets(args.arg_directory)?;
+  } else if args.cmd_train {
+    train_dataset()?;
+  }
 
-    Ok(())
+  Ok(())
 }
