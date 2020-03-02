@@ -18,15 +18,20 @@ use crate::error::Error;
 use juice::layer::{LayerConfig, LayerType};
 use juice::layers::{LinearConfig, NegativeLogLikelihoodConfig, SequentialConfig};
 
-use juice::util::native_backend;
+use juice::util::{native_backend, write_batch_sample};
 
-use juice::solver::{Solver, SolverConfig};
+use juice::solver::{Solver, SolverConfig, ConfusionMatrix};
 use std::rc::Rc;
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use std::iter::FromIterator;
+use crate::dataIter::{DataIter, BatchDataIter};
+use coaster::SharedTensor;
+use std::sync::{Arc, RwLock};
+use std::borrow::BorrowMut;
 
 mod error;
+mod dataIter;
 
 const DATA_LINKS: [&str; 4] = [
     "http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz",
@@ -118,7 +123,7 @@ fn getModelCfg(batch_size: usize, input_dimensions: (usize, usize)) -> LayerConf
     let linear_1 = LayerConfig::new("linear1", LinearConfig { output_size: 500 });
     let linear_2 = LayerConfig::new("linear2", LinearConfig { output_size: 10 });
 
-    let first_activation = LayerConfig::new("relu", LayerType::ReLU);
+    let first_activation = LayerConfig::new("relu", LayerType::Sigmoid);
     let last_activation = LayerConfig::new("sigmoid", LayerType::Sigmoid);
 
     let mut total_config = SequentialConfig::default();
@@ -181,22 +186,40 @@ fn train_dataset() -> Result<(), Error> {
     solver_cfg.objective = object_cfg;
 
     let native_backend = Rc::new(native_backend());
-    let _solver = Solver::from_config(native_backend.clone(), native_backend.clone(), &solver_cfg);
+    let mut solver = Solver::from_config(native_backend.clone(), native_backend.clone(), &solver_cfg);
 
-    loop {
-        let _label = match &trainLabelFile.read_u8() {
-            Err(_) => break,
-            Ok(l) => *l,
-        };
+    let mut dataIter: DataIter = DataIter::new(&mut trainLabelFile, &mut trainImageFile, rows, cols);
+    let mut batchIter: BatchDataIter = BatchDataIter { dataIter, batch_size };
 
-        let _image: Vec<u8> = Vec::from_iter((0..rows * cols).map(|_| -> u8 {
-            // Have to flip bits because otherwise it will be white text on a dark background
-            *(&trainImageFile.read_u8().unwrap()) ^ 255
+    let mut label_tensor: SharedTensor<f32> = SharedTensor::new(&[batch_size, 1]);
+	let mut inp_tensor: SharedTensor<f32> = SharedTensor::new(&[batch_size, rows*cols]);
+
+    let mut label_lock = Arc::new(RwLock::new(label_tensor));
+    let mut inp_lock = Arc::new(RwLock::new(inp_tensor));
+
+    let mut confusion = ConfusionMatrix::new(output_size);
+
+	for batch in batchIter {
+       for i in 0..batch_size {
+           let mut labels = label_lock.write().unwrap();
+           let mut inputs = inp_lock.write().unwrap();
+           write_batch_sample(&mut labels, &[batch.get(i).unwrap().0], i);
+           write_batch_sample(&mut inputs, batch.get(i).unwrap().1.as_slice(), i);
+       }
+
+        let inferred = solver.train_minibatch(inp_lock.clone(), label_lock.clone());
+		let mut inferred = inferred.write().unwrap();
+        let predictions = confusion.get_predictions(&mut inferred);
+        let labels = Vec::from_iter(batch.iter().map(|(u, v)| {
+            *u as usize
         }));
 
-        // In case you want to look at the actual image
-        // if i == 3 { break }
-        // image::save_buffer(format!("image{}_{}.png", i, label), image.as_slice(), rows as u32, cols as u32, image::ColorType::L8).unwrap();
+        println!("  Predictions were: {:?}", &predictions);
+		println!("Actual Labels were: {:?}", &labels);
+
+        confusion.add_samples(&predictions, &labels);
+
+        println!("Accuracy: {}", confusion.accuracy());
     }
 
     Ok(())
