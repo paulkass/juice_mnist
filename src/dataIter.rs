@@ -48,7 +48,7 @@ impl Iterator for BatchDataIter<'_> {
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let mut result_vec: Self::Item = vec![];
-		for _ in 0..10 {
+		for _ in 0..self.batch_size {
 			match self.dataIter.next() {
 				None => break,
 				Some(v) => result_vec.push(v)
