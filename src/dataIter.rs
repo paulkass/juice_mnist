@@ -3,10 +3,10 @@ use std::iter::FromIterator;
 use byteorder::ReadBytesExt;
 
 pub struct DataIter<'a> {
-	labelFile: &'a mut File,
-	imageFile: &'a mut File,
-	rows: usize,
-	cols: usize,
+	pub labelFile: &'a mut File,
+	pub imageFile: &'a mut File,
+	pub rows: usize,
+	pub cols: usize,
 }
 
 impl DataIter<'_> {
