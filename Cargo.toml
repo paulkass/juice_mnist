@@ -7,9 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-juice = { version = "0.2.3", default-features = false }
-coaster = "0.1.0"
-coaster-blas = "0.2.0"
+juice = { git = "https://github.com/spearow/juice", branch = "hotfix-rnn", default-features = false }
+#juice = { version = "0.2.3", default-features = false }
+#coaster = "0.1.0"
+#coaster-blas = "0.2.0"
 docopt = "1.1.0"
 serde = { version = "1", features = ["derive"] }
 url = "2.1.1"
