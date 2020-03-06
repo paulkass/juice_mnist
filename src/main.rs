@@ -92,7 +92,7 @@ fn download_datasets(dir: Option<String>) -> Result<(), Error> {
 
         let path = Path::new::<str>(directory.as_ref()).join(filename);
         let path = path.as_path();
-        println!("Downloading {:?}", path.file_name().unwrap());
+        // println!("Downloading {:?}", path.file_name().unwrap());
         {
             let mut file = File::create(path).expect("Failed to create a file to write to");
 
@@ -108,7 +108,7 @@ fn download_datasets(dir: Option<String>) -> Result<(), Error> {
             let mut gzippedBytes: Vec<u8> = vec![];
             let file = File::open(path)?;
             let mut decoder = GzDecoder::new(file);
-            println!("Decoding file {:?}", path.file_name().unwrap());
+            // println!("Decoding file {:?}", path.file_name().unwrap());
             decoder.read_to_end(&mut gzippedBytes);
 
             // Write the decoded file
@@ -152,7 +152,7 @@ fn get_image_iterator(
         rows = readu32(&image_file).unwrap() as usize;
         cols = readu32(&image_file).unwrap() as usize;
 
-        println!("Image dimensions are: ({}, {})", rows, cols);
+        // println!("Image dimensions are: ({}, {})", rows, cols);
 
         let data_iter: DataIter = DataIter {
             label_file,
@@ -244,7 +244,7 @@ fn train_dataset(
     let mut confusion = ConfusionMatrix::new(output_size);
 
     let times_to_loop = times_to_loop.unwrap_or(1);
-    println!("times_to_loop = {}", times_to_loop);
+    // println!("times_to_loop = {}", times_to_loop);
     for batch in train_data.iter() {
         for i in 0..batch_size {
             let mut labels = label_lock.write()?;
@@ -265,10 +265,10 @@ fn train_dataset(
 
         confusion.add_samples(&predictions, &labels);
     }
-    println!("Accuracy: {}", confusion.accuracy());
+    // println!("Accuracy: {}", confusion.accuracy());
 
     if let Some(f) = file {
-        println!("Writing network to {}", f);
+        // println!("Writing network to {}", f);
         solver.mut_network().save(f);
     }
 
@@ -318,7 +318,7 @@ fn test_dataset(path: Option<String>, batch_size: Option<usize>) -> Result<(), E
         confusion_matrix.add_samples(predictions.as_slice(), labels.as_slice());
     }
 
-    println!("Accuracy is {}", confusion_matrix.accuracy());
+    println!("{}", confusion_matrix.accuracy());
 
     Ok(())
 }
@@ -328,7 +328,7 @@ fn main() -> Result<(), Error> {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    println!("{:?}", args);
+    // println!("{:?}", args);
 
     if args.cmd_download {
         download_datasets(args.arg_directory)?;

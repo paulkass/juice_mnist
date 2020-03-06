@@ -16,3 +16,4 @@ Cargo.lock
 
 # Added by me
 data/
+models/*
