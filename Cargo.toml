@@ -7,10 +7,14 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-juice = { git = "https://github.com/spearow/juice", branch = "hotfix-rnn", default-features = false }
+#juice = { path = "../juice/juice" }
+#juice = { git = "https://github.com/spearow/juice", branch = "hotfix-rnn", default-features = false }
+juice = { git = "https://github.com/paulkass/juice", branch = "pk/testing_hotfix", default-features = false }
+coaster = { git = "https://github.com/paulkass/juice", branch = "pk/testing_hotfix" }
 #juice = { version = "0.2.3", default-features = false }
 #coaster = "0.1.0"
 #coaster-blas = "0.2.0"
+#coaster-nn = { git = "https://github.com/spearow/juice/coaster-nn", default-features = false }
 docopt = "1.1.0"
 serde = { version = "1", features = ["derive"] }
 url = "2.1.1"
@@ -18,6 +22,11 @@ curl = "0.4.25"
 flate2 = "1.0"
 byteorder = "1.3.4"
 image = "0.23.0"
+bindgen = "0.53.0"
+
+[patch.crates-io]
+#rcublas-sys = { path = "../juice/rcublas/cublas-sys" }
+#rcudnn-sys = { path = "../juice/rcudnn/cudnn-sys" }
 
 [profile.release]
 opt-level=3
